@@ -116,18 +116,12 @@ jobs:
             sed -n '1,120p' _stage/build/pdf/failed-remote-images.txt
           fi
 
-      - name: Replace workspace contents with generated manual
+      - name: Update root manual PDF
         shell: bash
         run: |
           set -euo pipefail
 
-          find . -mindepth 1 -maxdepth 1 \
-            ! -name .git \
-            ! -name .github \
-            ! -name _stage \
-            -exec rm -rf {} +
-
-          cp -a _stage/. ./
+          cp _stage/build/pdf/mayhem-manual.pdf mayhem-manual.pdf
           rm -rf _stage _wiki
 
       - name: Commit and push
@@ -138,7 +132,7 @@ jobs:
           git config user.name "Manual Bot"
           git config user.email "bot@example.com"
 
-          git add -A
+          git add mayhem-manual.pdf
 
           if git diff-index --cached --quiet HEAD --; then
             exit 0
