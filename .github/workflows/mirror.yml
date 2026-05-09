@@ -1,0 +1,148 @@
+name: Build PortaPack Mayhem wiki manual
+
+on:
+  push:
+    paths:
+      - .github/workflows/mirror.yml
+      - .github/scripts/generate_pdf_sources.py
+      - .github/templates/mayhem-template.typ
+  schedule:
+    - cron: "0 0 * * 0"
+  workflow_dispatch: {}
+
+jobs:
+  build-manual:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ca-certificates \
+            curl \
+            fonts-lmodern \
+            git \
+            python3 \
+            xz-utils
+
+      - name: Install Pandoc
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          url="$(
+            curl -fsSL https://api.github.com/repos/jgm/pandoc/releases/latest |
+              python3 -c 'import json, sys; release = json.load(sys.stdin); print(next(asset["browser_download_url"] for asset in release["assets"] if asset["name"].startswith("pandoc-") and asset["name"].endswith("-linux-amd64.tar.gz")))'
+          )"
+
+          curl -fsSLo /tmp/pandoc.tar.gz "$url"
+          rm -rf /tmp/pandoc
+          mkdir -p /tmp/pandoc
+          tar -xzf /tmp/pandoc.tar.gz -C /tmp/pandoc --strip-components=1
+          sudo install -m 0755 /tmp/pandoc/bin/pandoc /usr/local/bin/pandoc
+          pandoc --version
+
+      - name: Install Typst
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          url="$(
+            curl -fsSL https://api.github.com/repos/typst/typst/releases/latest |
+              python3 -c 'import json, sys; release = json.load(sys.stdin); print(next(asset["browser_download_url"] for asset in release["assets"] if asset["name"] == "typst-x86_64-unknown-linux-musl.tar.xz"))'
+          )"
+
+          curl -fsSLo /tmp/typst.tar.xz "$url"
+          rm -rf /tmp/typst
+          mkdir -p /tmp/typst
+          tar -xJf /tmp/typst.tar.xz -C /tmp/typst --strip-components=1
+          sudo install -m 0755 /tmp/typst/typst /usr/local/bin/typst
+          typst --version
+
+      - name: Clone wiki
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf _wiki
+          git clone --depth=1 https://github.com/portapack-mayhem/mayhem-firmware.wiki.git _wiki
+
+      - name: Generate PDF manual
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf _stage
+          mkdir -p _stage/build/pdf
+
+          python3 .github/scripts/generate_pdf_sources.py \
+            --wiki-root _wiki \
+            --out-dir _stage/build/pdf
+
+          if [ -d _wiki/img ]; then
+            mkdir -p _stage/img
+            cp -a _wiki/img/. _stage/img/
+          fi
+
+          pandoc \
+            --from=gfm+smart \
+            --to=typst \
+            --template=.github/templates/mayhem-template.typ \
+            --output=_stage/build/pdf/mayhem-manual.typ \
+            _stage/build/pdf/mayhem-manual-combined.md
+
+          typst compile \
+            --root _stage \
+            _stage/build/pdf/mayhem-manual.typ \
+            _stage/build/pdf/mayhem-manual.pdf
+
+          if [ -s _stage/build/pdf/missing-pages.txt ]; then
+            echo "Missing requested wiki pages:"
+            sed -n '1,120p' _stage/build/pdf/missing-pages.txt
+          fi
+
+          if [ -s _stage/build/pdf/failed-remote-images.txt ]; then
+            echo "Remote images that could not be cached:"
+            sed -n '1,120p' _stage/build/pdf/failed-remote-images.txt
+          fi
+
+      - name: Replace workspace contents with generated manual
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name .git \
+            ! -name .github \
+            ! -name _stage \
+            -exec rm -rf {} +
+
+          cp -a _stage/. ./
+          rm -rf _stage _wiki
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "Manual Bot"
+          git config user.email "bot@example.com"
+
+          git add -A
+
+          if git diff-index --cached --quiet HEAD --; then
+            exit 0
+          fi
+
+          git commit -q -m "Build Mayhem wiki manual - $(date -I) [skip ci]"
+          git push -q
